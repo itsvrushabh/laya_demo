@@ -7,7 +7,7 @@ Demonstrating sub-40ms non-autoregressive calibrated classification, scoring, an
 import sys
 import time
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List, TypedDict
 
 try:
     from rich.console import Console
@@ -29,7 +29,14 @@ except ImportError as e:
 
 console = Console()
 
-SAMPLE_CASES = [
+
+class TestCase(TypedDict):
+    title: str
+    state: Dict[str, Any]
+    questions: Dict[str, Dict[str, Any]]
+
+
+SAMPLE_CASES: List[TestCase] = [
     {
         "title": "Customer Support - Duplicate Billing Issue",
         "state": {
@@ -41,7 +48,7 @@ SAMPLE_CASES = [
             "intent": {
                 "type": "choice",
                 "instructions": "What is the primary customer intent?",
-                "options": ["billing_refund", "account_cancellation", "technical_support", "feature_request", "sales_inquiry"]
+                "criteria": ["billing_refund", "account_cancellation", "technical_support", "feature_request", "sales_inquiry"]
             },
             "is_urgent": {
                 "type": "noul",
@@ -65,7 +72,7 @@ SAMPLE_CASES = [
             "incident_category": {
                 "type": "choice",
                 "instructions": "What kind of security incident is this?",
-                "options": ["account_takeover", "phishing", "data_leak", "spam", "false_positive"]
+                "criteria": ["account_takeover", "phishing", "data_leak", "spam", "false_positive"]
             },
             "requires_immediate_lockout": {
                 "type": "noul",
@@ -89,7 +96,7 @@ SAMPLE_CASES = [
             "demande": {
                 "type": "choice",
                 "instructions": "Quelle est la nature du problème?",
-                "options": ["reinitialisation_mdp", "probleme_facturation", "annulation", "question_commerciale"]
+                "criteria": ["reinitialisation_mdp", "probleme_facturation", "annulation", "question_commerciale"]
             },
             "bloquant": {
                 "type": "noul",
@@ -118,7 +125,7 @@ def init_router() -> Router:
     ) as progress:
         progress.add_task(description="Preloading Laya Router models...", total=None)
         start_t = time.perf_counter()
-        router = Router(preload=True, device=device)
+        router = Router(preload=True, device=device, max_loaded=1)
         elapsed_init = (time.perf_counter() - start_t) * 1000.0
 
     console.print(f"[dim green]✓ Router preloaded in {elapsed_init:.1f}ms[/dim green]\n")
@@ -126,24 +133,28 @@ def init_router() -> Router:
 
 
 def format_answer_value(answer: Dict[str, Any]) -> str:
-    if "choice" in answer:
-        choice_val = answer["choice"]
-        conf = answer.get("confidence")
-        if conf is not None:
-            return f"[bold magenta]{choice_val}[/bold magenta] [dim]({conf * 100:.1f}% confidence)[/dim]"
-        return f"[bold magenta]{choice_val}[/bold magenta]"
+    ans_type = answer.get("type", "")
     
-    if "value" in answer:
-        val = answer["value"]
-        color = "green" if val else "red"
-        conf = answer.get("confidence")
-        conf_str = f" [dim]({conf * 100:.1f}%)[/dim]" if conf is not None else ""
-        return f"[{color}]{val}[/{color}]{conf_str}"
+    if ans_type == "choice" or "choice" in answer:
+        choice_val = answer.get("choice", "")
+        probs = answer.get("probabilities", {})
+        top_prob = probs.get(choice_val, answer.get("answer_confidence", answer.get("confidence", 0)))
+        return f"[bold magenta]{choice_val}[/bold magenta] [dim]({top_prob * 100:.1f}% probability)[/dim]"
+    
+    if ans_type == "noul" or "noul" in answer:
+        prob = answer.get("noul", 0.0)
+        is_true = prob >= 0.5
+        color = "green" if is_true else "red"
+        label = "YES (True)" if is_true else "NO (False)"
+        return f"[{color}]{label}[/{color}] [dim]({prob * 100:.1f}% likelihood)[/dim]"
         
-    if "score" in answer:
-        score_val = answer["score"]
-        level = answer.get("level", "")
-        return f"[bold yellow]{score_val}[/bold yellow] [dim]({level})[/dim]"
+    if ans_type == "score" or "score" in answer:
+        score_val = answer.get("score", 0.0)
+        legend = answer.get("legend", {})
+        closest_idx = str(round(score_val))
+        level_name = legend.get(closest_idx, "")
+        level_str = f" [cyan]({level_name})[/cyan]" if level_name else ""
+        return f"[bold yellow]{score_val:.2f}[/bold yellow]{level_str}"
 
     return str(answer)
 
@@ -154,13 +165,16 @@ def run_sample_demo(router: Router):
     for i, case in enumerate(SAMPLE_CASES, start=1):
         console.rule(f"[bold cyan]Scenario {i}: {case['title']}[/bold cyan]")
         
+        state: Dict[str, Any] = case["state"]
+        questions: Dict[str, Dict[str, Any]] = case["questions"]
+
         # Display Input State
-        state_str = "\n".join(f"  • [bold]{k}[/bold]: {v}" for k, v in case["state"].items())
+        state_str = "\n".join(f"  • [bold]{k}[/bold]: {v}" for k, v in state.items())
         console.print(f"[dim]Input State:[/dim]\n{state_str}\n")
         
         # Measure Inference Time
         start_time = time.perf_counter()
-        prediction = router.predict(case["state"], case["questions"])
+        prediction = router.predict(state, questions)
         latency_ms = (time.perf_counter() - start_time) * 1000.0
         
         # Results Table
@@ -172,9 +186,10 @@ def run_sample_demo(router: Router):
         answers = prediction.get("answers", {})
         routing_info = prediction.get("routing", {})
 
-        for q_key, q_config in case["questions"].items():
+        for q_key, q_config in questions.items():
             ans = answers.get(q_key, {})
-            table.add_row(q_key, q_config.get("type", "unknown"), format_answer_value(ans))
+            q_type = str(q_config.get("type", "unknown"))
+            table.add_row(q_key, q_type, format_answer_value(ans))
 
         console.print(table)
         
@@ -193,7 +208,8 @@ def run_latency_benchmark(router: Router, iterations: int = 15):
     test_questions = {
         "intent": {
             "type": "choice",
-            "options": ["order_status", "refund_request", "product_defect", "account_settings"]
+            "instructions": "What is the inquiry intent?",
+            "criteria": ["order_status", "refund_request", "product_defect", "account_settings"]
         },
         "urgent": {
             "type": "noul",
@@ -246,7 +262,7 @@ def interactive_mode(router: Router):
         "category": {
             "type": "choice",
             "instructions": "Select the primary category",
-            "options": ["support", "billing", "sales", "feedback", "spam"]
+            "criteria": ["support", "billing", "sales", "feedback", "spam"]
         },
         "escalation_needed": {
             "type": "noul",

@@ -11,7 +11,7 @@ const PRESETS = {
             "intent": {
                 "type": "choice",
                 "instructions": "What is the primary customer intent?",
-                "options": ["billing_refund", "account_cancellation", "technical_support", "feature_request", "sales_inquiry"]
+                "criteria": ["billing_refund", "account_cancellation", "technical_support", "feature_request", "sales_inquiry"]
             },
             "is_urgent": {
                 "type": "noul",
@@ -34,7 +34,7 @@ const PRESETS = {
             "incident_category": {
                 "type": "choice",
                 "instructions": "What kind of security incident is this?",
-                "options": ["account_takeover", "phishing", "data_leak", "spam", "false_positive"]
+                "criteria": ["account_takeover", "phishing", "data_leak", "spam", "false_positive"]
             },
             "requires_immediate_lockout": {
                 "type": "noul",
@@ -57,7 +57,7 @@ const PRESETS = {
             "demande": {
                 "type": "choice",
                 "instructions": "Quelle est la nature du problème?",
-                "options": ["reinitialisation_mdp", "probleme_facturation", "annulation", "question_commerciale"]
+                "criteria": ["reinitialisation_mdp", "probleme_facturation", "annulation", "question_commerciale"]
             },
             "bloquant": {
                 "type": "noul",
@@ -76,7 +76,7 @@ const PRESETS = {
             "deal_size": {
                 "type": "choice",
                 "instructions": "Projected deal tier",
-                "options": ["self_serve", "mid_market", "strategic_enterprise"]
+                "criteria": ["self_serve", "mid_market", "strategic_enterprise"]
             },
             "high_priority_lead": {
                 "type": "noul",
@@ -176,12 +176,13 @@ function renderDecisions(result, latencyMs) {
         let badgeHtml = "";
         let confidenceHtml = "";
 
-        if ("choice" in item) {
+        if (item.type === "choice" || "choice" in item) {
             badgeHtml = `<span class="px-2 py-0.5 text-[11px] font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 rounded">Choice</span>`;
             valueHtml = `<span class="text-base font-bold text-white">${item.choice}</span>`;
             
-            if (item.confidence !== undefined && item.confidence !== null) {
-                const pct = Math.round(item.confidence * 100);
+            const confVal = item.answer_confidence !== undefined ? item.answer_confidence : item.confidence;
+            if (confVal !== undefined && confVal !== null) {
+                const pct = Math.round(confVal * 100);
                 confidenceHtml = `
                     <div class="mt-2.5">
                         <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
@@ -194,8 +195,9 @@ function renderDecisions(result, latencyMs) {
                     </div>
                 `;
             }
-        } else if ("value" in item) {
-            const isTrue = item.value === true;
+        } else if (item.type === "noul" || "noul" in item || "value" in item) {
+            const prob = item.noul !== undefined ? item.noul : (item.value ? 1.0 : 0.0);
+            const isTrue = prob >= 0.5;
             badgeHtml = `<span class="px-2 py-0.5 text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded">Noul (Boolean)</span>`;
             valueHtml = `
                 <div class="flex items-center space-x-2">
@@ -204,26 +206,32 @@ function renderDecisions(result, latencyMs) {
                 </div>
             `;
             
-            if (item.confidence !== undefined && item.confidence !== null) {
-                const pct = Math.round(item.confidence * 100);
-                confidenceHtml = `
-                    <div class="mt-2.5">
-                        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
-                            <span>Probability</span>
-                            <span class="font-bold text-emerald-300">${pct}%</span>
-                        </div>
-                        <div class="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
-                            <div class="bg-gradient-to-r from-emerald-500 to-teal-400 h-2 rounded-full transition-all duration-500" style="width: ${pct}%"></div>
-                        </div>
+            const pct = Math.round(prob * 100);
+            confidenceHtml = `
+                <div class="mt-2.5">
+                    <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+                        <span>Likelihood</span>
+                        <span class="font-bold ${isTrue ? 'text-emerald-300' : 'text-rose-300'}">${pct}%</span>
                     </div>
-                `;
-            }
-        } else if ("score" in item) {
+                    <div class="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+                        <div class="bg-gradient-to-r ${isTrue ? 'from-emerald-500 to-teal-400' : 'from-rose-500 to-amber-500'} h-2 rounded-full transition-all duration-500" style="width: ${pct}%"></div>
+                    </div>
+                </div>
+            `;
+        } else if (item.type === "score" || "score" in item) {
             badgeHtml = `<span class="px-2 py-0.5 text-[11px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded">Score</span>`;
+            const scoreVal = typeof item.score === "number" ? item.score.toFixed(2) : item.score;
+            let levelStr = "";
+            if (item.legend && typeof item.score === "number") {
+                const closestIdx = String(Math.round(item.score));
+                if (item.legend[closestIdx]) {
+                    levelStr = ` (${item.legend[closestIdx]})`;
+                }
+            }
             valueHtml = `
                 <div class="flex items-center space-x-2">
-                    <span class="text-base font-bold text-amber-300">${item.score}</span>
-                    ${item.level ? `<span class="text-xs text-slate-400 font-normal">(${item.level})</span>` : ''}
+                    <span class="text-base font-bold text-amber-300">${scoreVal}</span>
+                    <span class="text-xs text-slate-400 font-normal">${levelStr}</span>
                 </div>
             `;
         } else {

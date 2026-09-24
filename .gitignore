@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+#lock files
+poetry.lock
+uv.lock
+*.lock
